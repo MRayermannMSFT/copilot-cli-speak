@@ -20,10 +20,6 @@ jobs:
             target_platform: darwin
             target_arch: arm64
             artifact: copilot-cli-speak-darwin-arm64
-          - os: macos-13
-            target_platform: darwin
-            target_arch: x64
-            artifact: copilot-cli-speak-darwin-x64
 
     runs-on: ${{ matrix.os }}
 
@@ -94,5 +90,4 @@ jobs:
           - **Windows ARM64**: Use the \`win-x64\` build (runs via x86 emulation)
           - **Linux**: Not included yet — build from source" \
             artifacts/copilot-cli-speak-win-x64/*.zip \
-            artifacts/copilot-cli-speak-darwin-arm64/*.zip \
-            artifacts/copilot-cli-speak-darwin-x64/*.zip
+            artifacts/copilot-cli-speak-darwin-arm64/*.zip
