@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target_platform: win
+            target_arch: x64
+            artifact: copilot-cli-speak-win-x64
+          - os: macos-latest
+            target_platform: darwin
+            target_arch: arm64
+            artifact: copilot-cli-speak-darwin-arm64
+          - os: macos-13
+            target_platform: darwin
+            target_arch: x64
+            artifact: copilot-cli-speak-darwin-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+        env:
+          TARGET_PLATFORM: ${{ matrix.target_platform }}
+          TARGET_ARCH: ${{ matrix.target_arch }}
+
+      - name: Create release archive
+        shell: bash
+        run: |
+          cd dist
+          if [[ "${{ matrix.target_platform }}" == "win" ]]; then
+            7z a -tzip "../${{ matrix.artifact }}.zip" .
+          else
+            zip -r "../${{ matrix.artifact }}.zip" .
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate version tag
+        id: version
+        run: |
+          VERSION="v0.1.0-$(date +%Y%m%d.%H%M%S)"
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            --title "Speak Extension $TAG" \
+            --notes "## Installation
+
+          1. Download the zip for your platform
+          2. Extract to \`~/.copilot/extensions/speak/\`
+          3. Restart Copilot CLI
+          4. Run \`/speak\` to enable
+
+          The TTS model (~305MB) downloads automatically on first use.
+
+          ### Platform notes
+          - **Windows ARM64**: Use the \`win-x64\` build (runs via x86 emulation)
+          - **Linux**: Not included yet — build from source" \
+            artifacts/copilot-cli-speak-win-x64/*.zip \
+            artifacts/copilot-cli-speak-darwin-arm64/*.zip \
+            artifacts/copilot-cli-speak-darwin-x64/*.zip

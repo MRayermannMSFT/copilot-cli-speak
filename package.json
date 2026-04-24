@@ -1,0 +1,14 @@
+{
+  "name": "copilot-cli-speak",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Text-to-speech extension for GitHub Copilot CLI using Kokoro via sherpa-onnx",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "sherpa-onnx-node": "^1.0.0"
+  }
+}
