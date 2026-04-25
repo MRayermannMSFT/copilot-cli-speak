@@ -5,8 +5,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { joinSession } from "@github/copilot-sdk/extension";
-import { execFile } from "node:child_process";
-import { mkdir, unlink, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,21 +86,69 @@ async function ensureModelDownloaded(logFn) {
     }
 }
 
-// ── TTS via Worker Process ─────────────────────────────────────────
+// ── TTS via Persistent Worker Process ──────────────────────────────
 
-function spawnSpeech(text) {
+import { fork } from "node:child_process";
+
+let worker = null;
+let workerReady = null;
+let requestId = 0;
+const pendingRequests = new Map();
+
+function ensureWorker() {
+    if (worker && !worker.killed) return workerReady;
+
+    log("spawning persistent TTS worker...");
+    const nodeCmd = osPlatform() === "win32" ? "node.exe" : "node";
+
+    workerReady = new Promise((resolveReady) => {
+        const child = fork(WORKER_PATH, [__dirname], {
+            execPath: nodeCmd,
+            stdio: ["pipe", "ignore", "ignore", "ipc"],
+            windowsHide: true,
+            execArgv: [],
+        });
+
+        child.on("message", (msg) => {
+            if (msg.type === "ready") {
+                log("worker ready");
+                resolveReady();
+            } else if (msg.type === "done" || msg.type === "error") {
+                const pending = pendingRequests.get(msg.id);
+                if (pending) {
+                    pendingRequests.delete(msg.id);
+                    if (msg.type === "error") pending.reject(new Error(msg.error));
+                    else pending.resolve();
+                }
+            }
+        });
+
+        child.on("exit", (code) => {
+            log(`worker exited with code ${code}`);
+            worker = null;
+            // Reject any pending requests
+            for (const [id, p] of pendingRequests) {
+                p.reject(new Error("Worker exited"));
+                pendingRequests.delete(id);
+            }
+        });
+
+        child.on("error", (err) => {
+            log(`worker error: ${err.message}`);
+        });
+
+        worker = child;
+    });
+
+    return workerReady;
+}
+
+async function spawnSpeech(text) {
+    await ensureWorker();
+    const id = ++requestId;
     return new Promise((resolve, reject) => {
-        const nodeCmd = osPlatform() === "win32" ? "node.exe" : "node";
-        const env = { ...process.env };
-        const child = execFile(
-            nodeCmd,
-            [WORKER_PATH, __dirname, text, String(speed)],
-            { timeout: 60000, windowsHide: true, env },
-            (err, stdout, stderr) => {
-                if (err) reject(new Error(stderr || err.message));
-                else resolve();
-            },
-        );
+        pendingRequests.set(id, { resolve, reject });
+        worker.stdin.write(JSON.stringify({ type: "speak", text, speed, id }) + "\n");
     });
 }
 
