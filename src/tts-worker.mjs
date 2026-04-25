@@ -116,40 +116,55 @@ const tts = new sherpa_onnx.OfflineTts({
 
 const config = new sherpa_onnx.GenerationConfig({ sid: 0, speed });
 
-// Try streaming via ffplay, fall back to WAV if ffplay unavailable
+// Try streaming via ffplay, fall back to WAV if anything fails
+let played = false;
+
 let ffplayPath;
 try {
     ffplayPath = ensureFfplay();
 } catch (e) {
-    console.error("[speak] ffplay unavailable, using WAV fallback:", e.message);
+    console.error("[speak] ffplay unavailable:", e.message);
 }
 
 if (ffplayPath) {
-    // Streaming mode: pipe PCM chunks to ffplay's stdin
-    const player = spawn(ffplayPath, [
-        "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", "1",
-        "-nodisp", "-autoexit", "-loglevel", "quiet",
-        "-i", "pipe:0",
-    ], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    try {
+        const player = spawn(ffplayPath, [
+            "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", "1",
+            "-nodisp", "-autoexit", "-loglevel", "quiet",
+            "-i", "pipe:0",
+        ], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
 
-    const audio = await tts.generateAsync({
-        text,
-        generationConfig: config,
-        onProgress: (info) => {
-            if (player.stdin.writable) {
-                player.stdin.write(float32ToPcm16(info.samples));
-            }
-            return 1;
-        },
-    });
+        // Catch spawn errors (bad binary, permission denied, etc.)
+        let spawnError = null;
+        player.on("error", (err) => { spawnError = err; });
 
-    player.stdin.end();
-    await new Promise((resolve) => {
-        player.on("close", resolve);
-        setTimeout(resolve, 60000);
-    });
-} else {
+        const audio = await tts.generateAsync({
+            text,
+            generationConfig: config,
+            onProgress: (info) => {
+                if (!spawnError && player.stdin.writable) {
+                    try { player.stdin.write(float32ToPcm16(info.samples)); } catch {}
+                }
+                return 1;
+            },
+        });
+
+        if (!spawnError) {
+            player.stdin.end();
+            await new Promise((resolve) => {
+                player.on("close", resolve);
+                setTimeout(resolve, 60000);
+            });
+            played = true;
+        }
+    } catch (e) {
+        console.error("[speak] ffplay streaming failed:", e.message);
+    }
+}
+
+if (!played) {
     // WAV fallback
+    console.error("[speak] Using WAV fallback");
     const audio = tts.generate({ text, generationConfig: config });
     await fallbackWavPlayback(audio.samples, audio.sampleRate);
 }
