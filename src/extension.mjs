@@ -19,7 +19,16 @@ const __dirname = process.env.EXTENSION_PATH
 const SETTINGS_PATH = join(__dirname, ".cache", "settings.json");
 const MODEL_DIR = join(__dirname, ".cache", "kokoro-en-v0_19");
 const WORKER_PATH = join(__dirname, "tts-worker.mjs");
+const LOG_PATH = join(__dirname, ".cache", "debug.log");
 const MAX_CHARS = 500;
+
+import { appendFileSync, mkdirSync } from "node:fs";
+function log(msg) {
+    try {
+        mkdirSync(dirname(LOG_PATH), { recursive: true });
+        appendFileSync(LOG_PATH, `${new Date().toISOString()} [ext] ${msg}\n`);
+    } catch {}
+}
 
 // ── State ──────────────────────────────────────────────────────────
 
@@ -175,7 +184,8 @@ await loadSettings();
 
 const session = await joinSession({
     hooks: {
-        onUserPromptSubmitted: async () => {
+        onUserPromptSubmitted: async (input) => {
+            log(`hook onUserPromptSubmitted: enabled=${speakEnabled}, behaviors=[${[...activeBehaviors]}], prompt="${input.prompt?.slice(0, 80)}"`);
             if (!speakEnabled || activeBehaviors.size === 0) return;
 
             const instructions = [...activeBehaviors]
@@ -198,6 +208,7 @@ const session = await joinSession({
             name: "speak",
             description: "Configure speak mode settings",
             handler: async () => {
+                log("command /speak invoked");
                 const behaviorChoices = Object.entries(BEHAVIORS).map(
                     ([key, b]) => ({ const: key, title: `${b.label} — ${b.description}` }),
                 );
@@ -290,6 +301,7 @@ const session = await joinSession({
             },
             skipPermission: true,
             handler: async (args) => {
+                log(`tool speak called: enabled=${speakEnabled}, text="${(args.text || "").slice(0, 80)}"`);
                 if (!speakEnabled) {
                     return "Speak mode is not active. The user can enable it with /speak.";
                 }
