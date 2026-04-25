@@ -233,11 +233,8 @@ const session = await joinSession({
             skipPermission: true,
             handler: async (args) => {
                 log(`tool speak called: enabled=${speakEnabled}, text="${(args.text || "").slice(0, 80)}"`);
-                if (!speakEnabled) {
-                    return "Speak mode is not active. The user can enable it with /speak.";
-                }
-                if (!args.text || !args.text.trim()) {
-                    return "No text provided to speak.";
+                if (!speakEnabled || !args.text || !args.text.trim()) {
+                    return "";
                 }
                 try {
                     enqueueSpeech(args.text);
