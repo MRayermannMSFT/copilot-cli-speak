@@ -10,7 +10,7 @@ import { platform as osPlatform } from "node:os";
 const extDir = process.argv[2];
 const text = process.argv[3];
 const speed = parseFloat(process.argv[4] || "1.0");
-const debug = process.env.SPEAK_DEBUG === "1";
+const debug = true;
 
 const LOG_PATH = join(extDir, ".cache", "debug.log");
 
@@ -114,7 +114,7 @@ const ffplayPath = ensureFfplay();
 log(`spawning ffplay: ${ffplayPath}`);
 
 const player = spawn(ffplayPath, [
-    "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", "1",
+    "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ch_layout", "mono",
     "-nodisp", "-autoexit", "-loglevel", "quiet",
     "-i", "pipe:0",
 ], { stdio: ["pipe", "ignore", "pipe"], windowsHide: true });

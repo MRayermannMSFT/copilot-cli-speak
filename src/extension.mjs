@@ -26,7 +26,6 @@ const MAX_CHARS = 500;
 let speakEnabled = false;
 let defaultEnabled = false;
 let speed = 1.0;
-let debugMode = false;
 
 const BEHAVIORS = {
     status: {
@@ -126,7 +125,7 @@ async function ensureModelDownloaded(logFn) {
 function spawnSpeech(text) {
     return new Promise((resolve, reject) => {
         const nodeCmd = osPlatform() === "win32" ? "node.exe" : "node";
-        const env = { ...process.env, SPEAK_DEBUG: debugMode ? "1" : "0" };
+        const env = { ...process.env };
         const child = execFile(
             nodeCmd,
             [WORKER_PATH, __dirname, text, String(speed)],
@@ -238,12 +237,6 @@ const session = await joinSession({
                                 description: "Remember these settings for future sessions",
                                 default: false,
                             },
-                            debug: {
-                                type: "boolean",
-                                title: "Enable debug logging",
-                                description: "Write verbose logs to .cache/debug.log",
-                                default: debugMode,
-                            },
                         },
                         required: ["enabled"],
                     },
@@ -263,8 +256,6 @@ const session = await joinSession({
                     defaultEnabled = speakEnabled;
                     await saveSettings();
                 }
-
-                debugMode = !!result.content?.debug;
 
                 if (speakEnabled) {
                     await session.log("🔊 Speak mode enabled", { level: "info" });
