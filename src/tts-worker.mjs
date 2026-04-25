@@ -1,18 +1,35 @@
-// TTS worker — generates speech and streams PCM to ffplay for low-latency playback
+// TTS worker — generates speech and streams PCM to ffplay
 // ffplay is auto-downloaded on first use to .cache/ffplay/
+// Set SPEAK_DEBUG=1 for verbose logging to .cache/debug.log
 import { createRequire } from "node:module";
 import { spawn, execSync } from "node:child_process";
 import { join } from "node:path";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, statSync } from "node:fs";
-import { platform as osPlatform, arch as osArch } from "node:os";
+import { existsSync, mkdirSync, unlinkSync, statSync, appendFileSync } from "node:fs";
+import { platform as osPlatform } from "node:os";
 
 const extDir = process.argv[2];
 const text = process.argv[3];
 const speed = parseFloat(process.argv[4] || "1.0");
+const debug = process.env.SPEAK_DEBUG === "1";
+
+const LOG_PATH = join(extDir, ".cache", "debug.log");
+
+function log(msg) {
+    if (!debug) return;
+    const line = `${new Date().toISOString()} ${msg}\n`;
+    try { appendFileSync(LOG_PATH, line); } catch {}
+}
+
+log(`--- worker start: text="${text.slice(0, 80)}", speed=${speed}`);
+
+// ── Load sherpa-onnx ───────────────────────────────────────────────
 
 const nativeDir = join(extDir, "native");
 const require = createRequire(join(nativeDir, "sherpa-onnx-node", "package.json"));
+
+log("loading sherpa-onnx...");
 const sherpa_onnx = require("./sherpa-onnx.js");
+log("sherpa-onnx loaded");
 
 const MODEL_DIR = join(extDir, ".cache", "kokoro-en-v0_19");
 const FFPLAY_DIR = join(extDir, ".cache", "ffplay");
@@ -32,20 +49,21 @@ function getFfplayPath() {
 
 function ensureFfplay() {
     const ffplayPath = getFfplayPath();
-    if (existsSync(ffplayPath)) return ffplayPath;
+    if (existsSync(ffplayPath)) {
+        log(`ffplay exists at ${ffplayPath}`);
+        return ffplayPath;
+    }
 
     mkdirSync(FFPLAY_DIR, { recursive: true });
     const url = FFPLAY_URLS[osPlatform()];
-    if (!url) throw new Error(`No ffplay download for ${osPlatform()}`);
+    if (!url) throw new Error(`No ffplay download URL for platform: ${osPlatform()}`);
 
-    console.error("[speak] Downloading ffplay (one-time)...");
+    log(`downloading ffplay from ${url}`);
     const zipPath = join(FFPLAY_DIR, "ffplay-download.zip");
-
-    // Use curl for reliable download (available on all modern Windows/macOS)
     execSync(`curl -fSL -o "${zipPath}" "${url}"`, { stdio: "pipe", windowsHide: true });
+    log(`downloaded ${(statSync(zipPath).size / 1024 / 1024).toFixed(0)} MB`);
 
     if (osPlatform() === "win32") {
-        // Extract just ffplay.exe from the zip
         execSync(`tar -xf "${zipPath}" --strip-components=2 -C "${FFPLAY_DIR}" "*/bin/ffplay.exe"`, {
             stdio: "pipe", windowsHide: true,
         });
@@ -55,7 +73,7 @@ function ensureFfplay() {
     }
 
     unlinkSync(zipPath);
-    console.error(`[speak] ffplay ready (${(statSync(ffplayPath).size / 1024 / 1024).toFixed(0)} MB)`);
+    log(`ffplay extracted: ${(statSync(ffplayPath).size / 1024 / 1024).toFixed(0)} MB`);
     return ffplayPath;
 }
 
@@ -70,35 +88,9 @@ function float32ToPcm16(samples) {
     return buf;
 }
 
-// ── WAV fallback playback ──────────────────────────────────────────
-
-function fallbackWavPlayback(samples, sampleRate) {
-    const audioDir = join(extDir, ".cache", "audio");
-    mkdirSync(audioDir, { recursive: true });
-    const wavPath = join(audioDir, `speak-${Date.now()}.wav`);
-    sherpa_onnx.writeWave(wavPath, { samples, sampleRate });
-
-    const os = osPlatform();
-    let cmd, args;
-    if (os === "darwin") { cmd = "afplay"; args = [wavPath]; }
-    else if (os === "win32") {
-        cmd = "powershell.exe";
-        args = ["-NoProfile", "-NonInteractive", "-Command",
-            `(New-Object Media.SoundPlayer '${wavPath.replace(/'/g, "''")}').PlaySync()`];
-    } else { cmd = "aplay"; args = ["-q", wavPath]; }
-
-    return new Promise((resolve) => {
-        const proc = spawn(cmd, args, { stdio: "ignore", windowsHide: true });
-        proc.on("close", () => {
-            try { unlinkSync(wavPath); } catch {}
-            resolve();
-        });
-        proc.on("error", () => resolve());
-    });
-}
-
 // ── Main ───────────────────────────────────────────────────────────
 
+log("creating TTS instance...");
 const tts = new sherpa_onnx.OfflineTts({
     model: {
         kokoro: {
@@ -113,60 +105,79 @@ const tts = new sherpa_onnx.OfflineTts({
     },
     maxNumSentences: 1,
 });
+log("TTS instance created");
 
 const config = new sherpa_onnx.GenerationConfig({ sid: 0, speed });
 
-// Try streaming via ffplay, fall back to WAV if anything fails
-let played = false;
+// Ensure ffplay
+const ffplayPath = ensureFfplay();
+log(`spawning ffplay: ${ffplayPath}`);
 
-let ffplayPath;
-try {
-    ffplayPath = ensureFfplay();
-} catch (e) {
-    console.error("[speak] ffplay unavailable:", e.message);
-}
+const player = spawn(ffplayPath, [
+    "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", "1",
+    "-nodisp", "-autoexit", "-loglevel", "quiet",
+    "-i", "pipe:0",
+], { stdio: ["pipe", "ignore", "pipe"], windowsHide: true });
 
-if (ffplayPath) {
-    try {
-        const player = spawn(ffplayPath, [
-            "-f", "s16le", "-ar", String(SAMPLE_RATE), "-ac", "1",
-            "-nodisp", "-autoexit", "-loglevel", "quiet",
-            "-i", "pipe:0",
-        ], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+let playerError = null;
+player.on("error", (err) => {
+    playerError = err;
+    log(`ffplay spawn error: ${err.message}`);
+});
 
-        // Catch spawn errors (bad binary, permission denied, etc.)
-        let spawnError = null;
-        player.on("error", (err) => { spawnError = err; });
+player.stderr?.on("data", (data) => {
+    log(`ffplay stderr: ${data.toString().trimEnd()}`);
+});
 
-        const audio = await tts.generateAsync({
-            text,
-            generationConfig: config,
-            onProgress: (info) => {
-                if (!spawnError && player.stdin.writable) {
-                    try { player.stdin.write(float32ToPcm16(info.samples)); } catch {}
-                }
-                return 1;
-            },
-        });
+log("generating speech...");
+let totalChunks = 0;
+let totalSamples = 0;
 
-        if (!spawnError) {
-            player.stdin.end();
-            await new Promise((resolve) => {
-                player.on("close", resolve);
-                setTimeout(resolve, 60000);
-            });
-            played = true;
+const audio = await tts.generateAsync({
+    text,
+    generationConfig: config,
+    onProgress: (info) => {
+        totalChunks++;
+        totalSamples += info.samples.length;
+        log(`onProgress chunk ${totalChunks}: ${info.samples.length} samples, progress=${info.progress}`);
+
+        if (playerError) {
+            log(`skipping write — player errored`);
+            return 0; // stop generation
         }
-    } catch (e) {
-        console.error("[speak] ffplay streaming failed:", e.message);
-    }
+
+        if (player.stdin.writable) {
+            const pcm = float32ToPcm16(info.samples);
+            const ok = player.stdin.write(pcm);
+            log(`wrote ${pcm.length} bytes to ffplay stdin (backpressure=${!ok})`);
+        } else {
+            log(`ffplay stdin not writable`);
+        }
+        return 1;
+    },
+});
+
+log(`generation done: ${totalChunks} chunks, ${totalSamples} total samples`);
+
+if (playerError) {
+    log(`aborting — ffplay error: ${playerError.message}`);
+    console.error(`ffplay error: ${playerError.message}`);
+    process.exit(1);
 }
 
-if (!played) {
-    // WAV fallback
-    console.error("[speak] Using WAV fallback");
-    const audio = tts.generate({ text, generationConfig: config });
-    await fallbackWavPlayback(audio.samples, audio.sampleRate);
-}
+player.stdin.end();
+log("stdin closed, waiting for ffplay to finish...");
 
-process.exit(0);
+const exitCode = await new Promise((resolve) => {
+    player.on("close", (code) => {
+        log(`ffplay exited with code ${code}`);
+        resolve(code);
+    });
+    setTimeout(() => {
+        log("ffplay timeout after 60s");
+        resolve(-1);
+    }, 60000);
+});
+
+log(`worker done, exit code ${exitCode}`);
+process.exit(exitCode === 0 ? 0 : 1);
