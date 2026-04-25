@@ -5,7 +5,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { joinSession } from "@github/copilot-sdk/extension";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { mkdir, unlink, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -16,7 +16,6 @@ const __dirname = process.env.EXTENSION_PATH
     ? dirname(process.env.EXTENSION_PATH)
     : dirname(fileURLToPath(import.meta.url));
 
-const AUDIO_DIR = join(__dirname, ".cache", "audio");
 const SETTINGS_PATH = join(__dirname, ".cache", "settings.json");
 const MODEL_DIR = join(__dirname, ".cache", "kokoro-en-v0_19");
 const WORKER_PATH = join(__dirname, "tts-worker.mjs");
@@ -28,6 +27,43 @@ let speakEnabled = false;
 let defaultEnabled = false;
 let speed = 1.0;
 
+const BEHAVIORS = {
+    status: {
+        label: "Status updates",
+        description: "Announce when starting/finishing major tasks",
+        default: true,
+        instruction: "Use the speak tool to briefly announce when you start or finish a major task, e.g. 'Starting the build' or 'All tests passed'.",
+    },
+    errors: {
+        label: "Errors & warnings",
+        description: "Announce errors and failures aloud",
+        default: true,
+        instruction: "Use the speak tool to announce errors, failures, or important warnings so the user hears them even if not watching the screen.",
+    },
+    greetings: {
+        label: "Greetings & farewells",
+        description: "Say hello and goodbye",
+        default: false,
+        instruction: "Use the speak tool to greet the user when they start a conversation and to say goodbye when the session ends.",
+    },
+    answers: {
+        label: "Answers",
+        description: "Speak concise answers to direct questions",
+        default: false,
+        instruction: "When the user asks a direct question, use the speak tool to speak a concise 1-sentence answer in addition to your full text response.",
+    },
+    celebrations: {
+        label: "Celebrations",
+        description: "Celebrate wins — tests passing, PRs merged",
+        default: false,
+        instruction: "Use the speak tool to celebrate wins — successful deployments, all tests passing, PRs merged, milestones reached.",
+    },
+};
+
+let activeBehaviors = new Set(
+    Object.entries(BEHAVIORS).filter(([, b]) => b.default).map(([k]) => k),
+);
+
 // ── Settings persistence ───────────────────────────────────────────
 
 async function loadSettings() {
@@ -38,6 +74,9 @@ async function loadSettings() {
         if (typeof data.speed === "number" && data.speed >= 0.5 && data.speed <= 2.0) {
             speed = data.speed;
         }
+        if (Array.isArray(data.behaviors)) {
+            activeBehaviors = new Set(data.behaviors.filter((b) => BEHAVIORS[b]));
+        }
     } catch {
         // No settings file yet
     }
@@ -45,7 +84,9 @@ async function loadSettings() {
 
 async function saveSettings() {
     await mkdir(dirname(SETTINGS_PATH), { recursive: true });
-    await writeFile(SETTINGS_PATH, JSON.stringify({ defaultEnabled, speed }), "utf-8");
+    await writeFile(SETTINGS_PATH, JSON.stringify({
+        defaultEnabled, speed, behaviors: [...activeBehaviors],
+    }), "utf-8");
 }
 
 // ── Model Download ─────────────────────────────────────────────────
@@ -81,64 +122,17 @@ async function ensureModelDownloaded(logFn) {
 
 // ── TTS via Worker Process ─────────────────────────────────────────
 
-function generateSpeech(text, wavPath) {
+function spawnSpeech(text) {
     return new Promise((resolve, reject) => {
         const nodeCmd = osPlatform() === "win32" ? "node.exe" : "node";
-        execFile(
+        const child = execFile(
             nodeCmd,
-            [WORKER_PATH, __dirname, text, String(speed), wavPath],
-            { timeout: 30000, windowsHide: true },
+            [WORKER_PATH, __dirname, text, String(speed)],
+            { timeout: 60000, windowsHide: true },
             (err, stdout, stderr) => {
                 if (err) reject(new Error(stderr || err.message));
                 else resolve();
             },
-        );
-    });
-}
-
-// ── Audio Playback ─────────────────────────────────────────────────
-
-function getPlayCommand(wavPath) {
-    const os = osPlatform();
-    if (os === "darwin") return ["afplay", [wavPath]];
-    if (os === "win32") {
-        return [
-            "powershell.exe",
-            ["-NoProfile", "-NonInteractive", "-Command",
-                `(New-Object Media.SoundPlayer '${wavPath.replace(/'/g, "''")}').PlaySync()`],
-        ];
-    }
-    return ["aplay", ["-q", wavPath]];
-}
-
-function playWav(wavPath) {
-    const [cmd, args] = getPlayCommand(wavPath);
-    return new Promise((resolve, reject) => {
-        const proc = spawn(cmd, args, { stdio: "ignore", windowsHide: true });
-        proc.on("error", (err) => {
-            if (osPlatform() === "linux" && cmd === "aplay") {
-                playWithFallbacks(wavPath, [
-                    ["paplay", [wavPath]],
-                    ["ffplay", ["-nodisp", "-autoexit", wavPath]],
-                ]).then(resolve, reject);
-            } else {
-                reject(err);
-            }
-        });
-        proc.on("close", (code) =>
-            code === 0 ? resolve() : reject(new Error(`Audio player exited ${code}`)),
-        );
-    });
-}
-
-function playWithFallbacks(wavPath, backends) {
-    if (backends.length === 0) return Promise.reject(new Error("No audio player found."));
-    const [[cmd, args], ...rest] = backends;
-    return new Promise((resolve, reject) => {
-        const proc = spawn(cmd, args, { stdio: "ignore", windowsHide: true });
-        proc.on("error", () => playWithFallbacks(wavPath, rest).then(resolve, reject));
-        proc.on("close", (code) =>
-            code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}`)),
         );
     });
 }
@@ -166,14 +160,7 @@ function enqueueSpeech(text) {
 
     const job = speechQueue.then(async () => {
         await ensureModelDownloaded();
-        await mkdir(AUDIO_DIR, { recursive: true });
-        const wavPath = join(AUDIO_DIR, `speak-${Date.now()}.wav`);
-        await generateSpeech(sanitized, wavPath);
-        try {
-            await playWav(wavPath);
-        } finally {
-            await unlink(wavPath).catch(() => {});
-        }
+        await spawnSpeech(sanitized);
     });
 
     speechQueue = job.catch((err) => {
@@ -186,11 +173,34 @@ function enqueueSpeech(text) {
 await loadSettings();
 
 const session = await joinSession({
+    hooks: {
+        onUserPromptSubmitted: async () => {
+            if (!speakEnabled || activeBehaviors.size === 0) return;
+
+            const instructions = [...activeBehaviors]
+                .map((key) => BEHAVIORS[key]?.instruction)
+                .filter(Boolean);
+
+            if (instructions.length === 0) return;
+
+            return {
+                additionalContext:
+                    "The user has enabled text-to-speech. You have a `speak` tool available. " +
+                    "Follow these speaking guidelines:\n" +
+                    instructions.map((i) => `- ${i}`).join("\n") +
+                    "\nKeep spoken text to 1–2 sentences. Always provide your full text response too — speech is supplementary.",
+            };
+        },
+    },
     commands: [
         {
             name: "speak",
             description: "Configure speak mode settings",
             handler: async () => {
+                const behaviorChoices = Object.entries(BEHAVIORS).map(
+                    ([key, b]) => ({ const: key, title: `${b.label} — ${b.description}` }),
+                );
+
                 const result = await session.ui.elicitation({
                     message: "Speak mode settings",
                     requestedSchema: {
@@ -202,6 +212,15 @@ const session = await joinSession({
                                 description: "Enable or disable speak mode for this session",
                                 enum: ["on", "off"],
                                 default: speakEnabled ? "on" : "off",
+                            },
+                            behaviors: {
+                                type: "array",
+                                title: "What to speak",
+                                description: "Choose what the agent should speak aloud",
+                                items: {
+                                    anyOf: behaviorChoices,
+                                },
+                                default: [...activeBehaviors],
                             },
                             speed: {
                                 type: "number",
@@ -228,6 +247,9 @@ const session = await joinSession({
                 if (typeof result.content?.speed === "number") {
                     speed = Math.max(0.5, Math.min(2.0, result.content.speed));
                 }
+                if (Array.isArray(result.content?.behaviors)) {
+                    activeBehaviors = new Set(result.content.behaviors.filter((b) => BEHAVIORS[b]));
+                }
 
                 if (result.content?.setDefault) {
                     defaultEnabled = speakEnabled;
@@ -236,7 +258,6 @@ const session = await joinSession({
 
                 if (speakEnabled) {
                     await session.log("🔊 Speak mode enabled", { level: "info" });
-                    // Pre-download model in background
                     ensureModelDownloaded((msg) => {
                         session.log(msg, { level: "info" }).catch(() => {});
                     }).catch((err) => {
