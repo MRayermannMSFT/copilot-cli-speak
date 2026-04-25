@@ -30,10 +30,9 @@ await esbuild.build({
     logLevel: "info",
 });
 
-// 2. Copy worker scripts (no bundling needed — they're standalone)
+// 2. Copy worker script (no bundling needed — it's standalone)
 copyFileSync(join(__dirname, "src", "tts-worker.mjs"), join(distDir, "tts-worker.mjs"));
-copyFileSync(join(__dirname, "src", "pcm-player.mjs"), join(distDir, "pcm-player.mjs"));
-console.log("Copied tts-worker.mjs + pcm-player.mjs");
+console.log("Copied tts-worker.mjs");
 
 // 3. Copy sherpa-onnx-node JS files (the pure-JS parts)
 const sherpaNodeDir = join(__dirname, "node_modules", "sherpa-onnx-node");
