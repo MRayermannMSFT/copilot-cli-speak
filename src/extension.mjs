@@ -216,7 +216,6 @@ const session = await joinSession({
                 "Keep spoken text to 1–2 short sentences. " +
                 "Do NOT speak for routine low-level steps like reading files or running grep — " +
                 "only speak for meaningful status changes, answers, or outcomes the user would want to hear even if not watching the screen. " +
-                "Only works when speak mode is enabled (/speak). " +
                 'Examples: "Starting the build now." / "Build failed — TypeScript errors in auth.ts." / ' +
                 '"All 47 tests passed!" / "The answer is yes, caching is enabled by default." / ' +
                 '"Done! Your pull request is ready for review."',
