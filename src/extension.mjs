@@ -347,3 +347,8 @@ const session = await joinSession({
         },
     ],
 });
+
+// Log startup state to timeline
+if (speakEnabled) {
+    session.log("🔊 Speak mode is on", { level: "info" }).catch(() => {});
+}
