@@ -367,6 +367,6 @@ function pollBluetooth() {
     }
     lastBtStatus = connected;
 }
-// Check every 10 seconds
-setInterval(pollBluetooth, 10_000);
+// Check every 3 seconds
+setInterval(pollBluetooth, 3_000);
 pollBluetooth();
