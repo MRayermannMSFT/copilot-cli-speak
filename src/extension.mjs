@@ -352,3 +352,21 @@ const session = await joinSession({
 if (speakEnabled) {
     session.log("🔊 Speak mode is on", { level: "info" }).catch(() => {});
 }
+
+// Poll BT status and log changes to timeline
+let lastBtStatus = null;
+function pollBluetooth() {
+    if (!speakEnabled || !requireBluetooth) return;
+    const connected = isBluetoothAudioConnected();
+    if (lastBtStatus !== null && connected !== lastBtStatus) {
+        if (connected) {
+            session.log("🎧 Bluetooth audio connected — speak active", { level: "info" }).catch(() => {});
+        } else {
+            session.log("🔇 Bluetooth audio disconnected — speak paused", { level: "info" }).catch(() => {});
+        }
+    }
+    lastBtStatus = connected;
+}
+// Check every 10 seconds
+setInterval(pollBluetooth, 10_000);
+pollBluetooth();
