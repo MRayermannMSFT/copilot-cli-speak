@@ -44,15 +44,28 @@ function isBluetoothAudioConnected() {
     try {
         const os = osPlatform();
         if (os === "win32") {
-            const out = execSync(
+            // Get actual BT device names (filter out infra/driver entries)
+            const btOut = execSync(
+                'powershell.exe -NoProfile -Command "Get-PnpDevice -Class Bluetooth -Status OK | Select-Object -ExpandProperty FriendlyName"',
+                { encoding: "utf-8", windowsHide: true, timeout: 5000 },
+            );
+            const infraPatterns = /enumerator|transport|driver|rfcomm|service|uart|fastconnect/i;
+            const btNames = btOut.split("\n").map((l) => l.trim()).filter((n) => n && !infraPatterns.test(n));
+
+            // Get active audio endpoint names
+            const audioOut = execSync(
                 'powershell.exe -NoProfile -Command "Get-PnpDevice -Class AudioEndpoint -Status OK | Select-Object -ExpandProperty FriendlyName"',
                 { encoding: "utf-8", windowsHide: true, timeout: 5000 },
             );
-            const btPatterns = /bluetooth|airpods|wh-|wf-|jabra|bose|beats|galaxy buds|sony|jbl|sennheiser|bang|b&o/i;
-            const devices = out.split("\n").map((l) => l.trim()).filter(Boolean);
-            const btDevices = devices.filter((d) => btPatterns.test(d));
-            log(`BT detection (win32): ${devices.length} audio endpoints, ${btDevices.length} bluetooth: [${btDevices.join(", ")}]`);
-            return btDevices.length > 0;
+            const audioNames = audioOut.split("\n").map((l) => l.trim()).filter(Boolean);
+
+            // Cross-reference: audio endpoint name contains a BT device name
+            const btAudio = audioNames.filter((audio) =>
+                btNames.some((bt) => audio.toLowerCase().includes(bt.toLowerCase())),
+            );
+
+            log(`BT detection (win32): bt=[${btNames.join(", ")}], audio=[${audioNames.join(", ")}], matched=[${btAudio.join(", ")}]`);
+            return btAudio.length > 0;
         }
         if (os === "darwin") {
             const out = execSync(
@@ -69,7 +82,7 @@ function isBluetoothAudioConnected() {
         return true;
     } catch (err) {
         log(`BT detection error: ${err.message}`);
-        return true; // Don't block on detection failure
+        return true;
     }
 }
 
@@ -350,7 +363,11 @@ const session = await joinSession({
 
 // Log startup state to timeline
 if (speakEnabled) {
-    session.log("🔊 Speak mode is on", { level: "info" }).catch(() => {});
+    if (requireBluetooth && !isBluetoothAudioConnected()) {
+        session.log("🔇 Speak mode is on but no Bluetooth audio connected", { level: "info" }).catch(() => {});
+    } else {
+        session.log("🔊 Speak mode is on", { level: "info" }).catch(() => {});
+    }
 }
 
 // Poll BT status and log changes to timeline
