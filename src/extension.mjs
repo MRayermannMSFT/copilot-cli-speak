@@ -310,7 +310,7 @@ const session = await joinSession({
                         console.error("[speak] Model download failed:", err);
                     });
                 } else {
-                    await session.log("🔇 Speak mode disabled", { level: "info" });
+                    await session.log("🔊 Speak mode disabled", { level: "info" });
                 }
             },
         },
@@ -364,7 +364,7 @@ const session = await joinSession({
 // Log startup state to timeline
 if (speakEnabled) {
     if (requireBluetooth && !isBluetoothAudioConnected()) {
-        session.log("🔇 Speak mode is on but no Bluetooth audio connected", { level: "info" }).catch(() => {});
+        session.log("🔊 Speak mode is on but no Bluetooth audio connected", { level: "info" }).catch(() => {});
     } else {
         session.log("🔊 Speak mode is on", { level: "info" }).catch(() => {});
     }
@@ -377,9 +377,9 @@ function pollBluetooth() {
     const connected = isBluetoothAudioConnected();
     if (lastBtStatus !== null && connected !== lastBtStatus) {
         if (connected) {
-            session.log("🎧 Bluetooth audio connected — speak active", { level: "info" }).catch(() => {});
+            session.log("🔊 Bluetooth audio connected — speak active", { level: "info" }).catch(() => {});
         } else {
-            session.log("🔇 Bluetooth audio disconnected — speak paused", { level: "info" }).catch(() => {});
+            session.log("🔊 Bluetooth audio disconnected — speak paused", { level: "info" }).catch(() => {});
         }
     }
     lastBtStatus = connected;
