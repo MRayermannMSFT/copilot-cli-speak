@@ -34,6 +34,44 @@ function log(msg) {
 let speakEnabled = false;
 let defaultEnabled = false;
 let speed = 1.0;
+let requireBluetooth = false;
+
+// ── Bluetooth Detection ────────────────────────────────────────────
+
+import { execSync } from "node:child_process";
+
+function isBluetoothAudioConnected() {
+    try {
+        const os = osPlatform();
+        if (os === "win32") {
+            const out = execSync(
+                'powershell.exe -NoProfile -Command "Get-PnpDevice -Class AudioEndpoint -Status OK | Select-Object -ExpandProperty FriendlyName"',
+                { encoding: "utf-8", windowsHide: true, timeout: 5000 },
+            );
+            const btPatterns = /bluetooth|airpods|wh-|wf-|jabra|bose|beats|galaxy buds|sony|jbl|sennheiser|bang|b&o/i;
+            const devices = out.split("\n").map((l) => l.trim()).filter(Boolean);
+            const btDevices = devices.filter((d) => btPatterns.test(d));
+            log(`BT detection (win32): ${devices.length} audio endpoints, ${btDevices.length} bluetooth: [${btDevices.join(", ")}]`);
+            return btDevices.length > 0;
+        }
+        if (os === "darwin") {
+            const out = execSync(
+                'system_profiler SPBluetoothDataType 2>/dev/null',
+                { encoding: "utf-8", timeout: 5000 },
+            );
+            const hasConnectedAudio = /Connected: Yes[\s\S]*?Minor Type:\s*(Headphones|Headset|Loudspeaker)/i.test(out);
+            const nameMatch = out.match(/(?:^|\n)\s{6}(\S[^\n:]+):\n[\s\S]*?Connected: Yes/m);
+            const deviceName = nameMatch ? nameMatch[1].trim() : "unknown";
+            log(`BT detection (darwin): ${hasConnectedAudio ? `found: ${deviceName}` : "none"}`);
+            return hasConnectedAudio;
+        }
+        log("BT detection: unsupported platform, allowing speak");
+        return true;
+    } catch (err) {
+        log(`BT detection error: ${err.message}`);
+        return true; // Don't block on detection failure
+    }
+}
 
 // ── Settings persistence ───────────────────────────────────────────
 
@@ -45,6 +83,9 @@ async function loadSettings() {
         if (typeof data.speed === "number" && data.speed >= 0.5 && data.speed <= 2.0) {
             speed = data.speed;
         }
+        if (typeof data.requireBluetooth === "boolean") {
+            requireBluetooth = data.requireBluetooth;
+        }
     } catch {
         // No settings file yet
     }
@@ -52,7 +93,7 @@ async function loadSettings() {
 
 async function saveSettings() {
     await mkdir(dirname(SETTINGS_PATH), { recursive: true });
-    await writeFile(SETTINGS_PATH, JSON.stringify({ defaultEnabled, speed }), "utf-8");
+    await writeFile(SETTINGS_PATH, JSON.stringify({ defaultEnabled, speed, requireBluetooth }), "utf-8");
 }
 
 // ── Model Download ─────────────────────────────────────────────────
@@ -186,6 +227,7 @@ function enqueueSpeech(text) {
 // ── Extension Entry Point ──────────────────────────────────────────
 
 await loadSettings();
+log(`startup: enabled=${speakEnabled}, speed=${speed}, requireBT=${requireBluetooth}`);
 
 const session = await joinSession({
     commands: [
@@ -215,6 +257,12 @@ const session = await joinSession({
                                 maximum: 2.0,
                                 default: speed,
                             },
+                            btOnly: {
+                                type: "boolean",
+                                title: "Require Bluetooth audio",
+                                description: "Only speak when a Bluetooth audio device is connected",
+                                default: requireBluetooth,
+                            },
                             setDefault: {
                                 type: "boolean",
                                 title: "Set as default",
@@ -231,6 +279,9 @@ const session = await joinSession({
                 speakEnabled = result.content?.enabled === "on";
                 if (typeof result.content?.speed === "number") {
                     speed = Math.max(0.5, Math.min(2.0, result.content.speed));
+                }
+                if (typeof result.content?.btOnly === "boolean") {
+                    requireBluetooth = result.content.btOnly;
                 }
 
                 if (result.content?.setDefault) {
@@ -278,8 +329,12 @@ const session = await joinSession({
             },
             skipPermission: true,
             handler: async (args) => {
-                log(`tool speak called: enabled=${speakEnabled}, text="${(args.text || "").slice(0, 80)}"`);
+                log(`tool speak called: enabled=${speakEnabled}, requireBT=${requireBluetooth}, text="${(args.text || "").slice(0, 80)}"`);
                 if (!speakEnabled || !args.text || !args.text.trim()) {
+                    return "";
+                }
+                if (requireBluetooth && !isBluetoothAudioConnected()) {
+                    log("speak skipped: no BT audio connected");
                     return "";
                 }
                 try {
