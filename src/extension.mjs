@@ -52,19 +52,20 @@ function isBluetoothAudioConnected() {
             const infraPatterns = /enumerator|transport|driver|rfcomm|service|uart|fastconnect/i;
             const btNames = btOut.split("\n").map((l) => l.trim()).filter((n) => n && !infraPatterns.test(n));
 
-            // Get ALL audio endpoints (any status — BT shows as Unknown when idle, OK when active)
+            // Only check ACTIVE (Status OK) audio endpoints — BT devices show as
+            // OK when connected, Unknown when paired-but-disconnected
             const audioOut = execSync(
-                'powershell.exe -NoProfile -Command "Get-PnpDevice -Class AudioEndpoint | Select-Object -ExpandProperty FriendlyName"',
+                'powershell.exe -NoProfile -Command "Get-PnpDevice -Class AudioEndpoint -Status OK | Select-Object -ExpandProperty FriendlyName"',
                 { encoding: "utf-8", windowsHide: true, timeout: 5000 },
             );
             const audioNames = audioOut.split("\n").map((l) => l.trim()).filter(Boolean);
 
-            // Cross-reference: audio endpoint name contains a BT device name
+            // Cross-reference: active audio endpoint name contains a BT device name
             const btAudio = audioNames.filter((audio) =>
                 btNames.some((bt) => audio.toLowerCase().includes(bt.toLowerCase())),
             );
 
-            log(`BT detection (win32): bt=[${btNames.join(", ")}], matched=[${btAudio.join(", ")}]`);
+            log(`BT detection (win32): bt=[${btNames.join(", ")}], activeAudio=[${audioNames.join(", ")}], matched=[${btAudio.join(", ")}]`);
             return btAudio.length > 0;
         }
         if (os === "darwin") {
