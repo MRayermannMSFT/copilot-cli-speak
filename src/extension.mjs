@@ -52,9 +52,9 @@ function isBluetoothAudioConnected() {
             const infraPatterns = /enumerator|transport|driver|rfcomm|service|uart|fastconnect/i;
             const btNames = btOut.split("\n").map((l) => l.trim()).filter((n) => n && !infraPatterns.test(n));
 
-            // Get active audio endpoint names
+            // Get ALL audio endpoints (any status — BT shows as Unknown when idle, OK when active)
             const audioOut = execSync(
-                'powershell.exe -NoProfile -Command "Get-PnpDevice -Class AudioEndpoint -Status OK | Select-Object -ExpandProperty FriendlyName"',
+                'powershell.exe -NoProfile -Command "Get-PnpDevice -Class AudioEndpoint | Select-Object -ExpandProperty FriendlyName"',
                 { encoding: "utf-8", windowsHide: true, timeout: 5000 },
             );
             const audioNames = audioOut.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -64,7 +64,7 @@ function isBluetoothAudioConnected() {
                 btNames.some((bt) => audio.toLowerCase().includes(bt.toLowerCase())),
             );
 
-            log(`BT detection (win32): bt=[${btNames.join(", ")}], audio=[${audioNames.join(", ")}], matched=[${btAudio.join(", ")}]`);
+            log(`BT detection (win32): bt=[${btNames.join(", ")}], matched=[${btAudio.join(", ")}]`);
             return btAudio.length > 0;
         }
         if (os === "darwin") {
@@ -372,17 +372,23 @@ if (speakEnabled) {
 
 // Poll BT status and log changes to timeline
 let lastBtStatus = null;
+let btPollRunning = false;
 function pollBluetooth() {
-    if (!speakEnabled || !requireBluetooth) return;
-    const connected = isBluetoothAudioConnected();
-    if (lastBtStatus !== null && connected !== lastBtStatus) {
-        if (connected) {
-            session.log("🔊 Bluetooth audio connected — speak active", { level: "info" }).catch(() => {});
-        } else {
-            session.log("🔊 Bluetooth audio disconnected — speak paused", { level: "info" }).catch(() => {});
+    if (!speakEnabled || !requireBluetooth || btPollRunning) return;
+    btPollRunning = true;
+    try {
+        const connected = isBluetoothAudioConnected();
+        if (lastBtStatus !== null && connected !== lastBtStatus) {
+            if (connected) {
+                session.log("🔊 Bluetooth audio connected — speak active", { level: "info" }).catch(() => {});
+            } else {
+                session.log("🔊 Bluetooth audio disconnected — speak paused", { level: "info" }).catch(() => {});
+            }
         }
+        lastBtStatus = connected;
+    } finally {
+        btPollRunning = false;
     }
-    lastBtStatus = connected;
 }
 // Check every 3 seconds
 setInterval(pollBluetooth, 3_000);
